@@ -1,11 +1,19 @@
+import "katex/dist/katex.min.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import { PdfAttachment } from "@/components/editor/PdfAttachment";
+import { FileAttachment } from "@/components/editor/FileAttachment";
 import Image from "@tiptap/extension-image";
+import { TaskItem, TaskList } from "@tiptap/extension-list";
+import { mergeAttributes } from "@tiptap/core";
 import Placeholder from "@tiptap/extension-placeholder";
 import { TableKit } from "@tiptap/extension-table";
-import { createExcerpt, docToMarkdown, docToText, emptyDoc, type MemoDetail, type MemoEditSession, type Notebook, type TiptapDoc } from "@edgeever/shared";
-import { getMobileEditorInputAttributes, getMobileEditorPlaceholder, type MobileEditorTableActionId } from "@edgeever/shared/mobile-editor";
+import { createExcerpt, docToMarkdown, docToText, emptyDoc, getImageReferrerPolicy, ImageGallery, isPdfAttachment, MergeDivider, PluginEmbed, type MemoDetail, type MemoEditSession, type Notebook, type TagSummary, type TiptapDoc } from "@edgeever/shared";
+import { createEdgeEverMathematics } from "@edgeever/shared/mathematics";
+import { getMobileEditorInputAttributes, getMobileEditorPlaceholder } from "@edgeever/shared/mobile-editor";
+import { EdgeEverLink } from "@edgeever/shared/editor-link";
 import {
   MobileEditorFallback,
   MobileEditorHeader,
@@ -13,22 +21,20 @@ import {
   MobileEditorNotebookSheet,
   MobileEditorToolbar,
 } from "@/components/MobileStandaloneEditorParts";
-import { getNotebookMoveOptions } from "@/lib/app-helpers";
+import { EDITOR_LOCAL_SAVE_DELAY_MS, getEditableMemoTitle, getNotebookMoveOptions } from "@/lib/app-helpers";
+import { defaultLocale, normalizeLocale } from "@/i18n/locales";
 import { compressImageForUpload } from "@/lib/image-compression";
-import { localDb, type LocalDraft } from "@/lib/local-db";
+import { localDb, type LocalDraft, type MemoUpdateSyncPayload } from "@/lib/local-db";
 import {
   getStandaloneMobileEditorReturnPath,
   markStandaloneMobileEditorReturning,
   writeMobileEditorReturnPreview,
 } from "@/lib/mobile-editor";
 import {
-  DEFAULT_MOBILE_EDITOR_MEMO_TITLE,
-  MOBILE_EDITOR_AUTO_SAVE_DELAY_MS,
   MOBILE_EDITOR_INITIAL_FOCUS_DELAY_MS,
   MOBILE_EDITOR_LEAVE_SAVE_TIMEOUT_MS,
   getMobileEditorDraftKey,
   getMobileEditorParams,
-  getMobileEditorSaveLabel,
   getMobileEditorStatusClassName,
   normalizeMobileEditorDoc,
   parseMobileEditorTags,
@@ -39,6 +45,28 @@ import {
   type MobileEditorSaveState,
 } from "@/lib/mobile-editor-standalone";
 import { getMemoUpdateQueueId, isMemoUpdateAlreadyApplied, queueMemoUpdate, shouldQueueMemoSaveError } from "@/lib/sync-queue";
+import { createMarkdownImagePasteRule } from "@/lib/markdown-image-paste";
+import { preserveEmptyListIndentOnBackspace, wrapIndentedParagraphInList } from "@/lib/editor-shortcuts";
+import { ThemeBlock } from "./ThemeBlock";
+import { EditorTagPicker } from "./EditorTagPicker";
+import { listLocalTags } from "@/lib/local-mirror";
+
+const ProtectedExternalImage = Image.extend({
+  addPasteRules() {
+    return [createMarkdownImagePasteRule(this.type)];
+  },
+  renderHTML({ HTMLAttributes }) {
+    const referrerPolicy = getImageReferrerPolicy(HTMLAttributes.src);
+    return [
+      "img",
+      mergeAttributes(
+        this.options.HTMLAttributes,
+        HTMLAttributes,
+        referrerPolicy ? { referrerpolicy: referrerPolicy } : {},
+      ),
+    ];
+  },
+});
 
 type ListNotebooksResponse = {
   notebooks: Notebook[];
@@ -54,7 +82,9 @@ export const MobileStandaloneTiptapEditor = ({
   onLeave,
 }: MobileStandaloneTiptapEditorProps = {}) => {
   const params = useMemo(() => getMobileEditorParams(), []);
+  const { t, i18n } = useTranslation();
   const memoId = memoIdProp ?? params.get("memoId");
+  const locale = normalizeLocale(i18n.resolvedLanguage ?? i18n.language) ?? defaultLocale;
   const draftKey = getMobileEditorDraftKey(memoId);
   const [memo, setMemo] = useState<MemoDetail | null>(null);
   const memoRef = useRef<MemoDetail | null>(null);
@@ -167,8 +197,18 @@ export const MobileStandaloneTiptapEditor = ({
 
   const editor = useEditor({
     extensions: [
-      StarterKit,
-      Image.configure({
+      StarterKit.configure({ link: false }),
+      EdgeEverLink,
+      PdfAttachment,
+      FileAttachment,
+      TaskList,
+      TaskItem.configure({ nested: true }),
+      MergeDivider,
+      PluginEmbed,
+      ...createEdgeEverMathematics(),
+      ThemeBlock,
+      ImageGallery,
+      ProtectedExternalImage.configure({
         allowBase64: false,
         inline: false,
       }),
@@ -176,12 +216,19 @@ export const MobileStandaloneTiptapEditor = ({
         table: { renderWrapper: true },
       }),
       Placeholder.configure({
-        placeholder: getMobileEditorPlaceholder("zh-CN"),
+        placeholder: getMobileEditorPlaceholder(locale),
       }),
     ],
     content: emptyDoc(),
     editorProps: {
       attributes: getMobileEditorInputAttributes("edgeever-mobile-tiptap-content"),
+      handleKeyDown: (view, event) => {
+        if (event.key !== "Backspace" || !preserveEmptyListIndentOnBackspace(view.state, view.dispatch)) {
+          return false;
+        }
+        event.preventDefault();
+        return true;
+      },
     },
     onUpdate: ({ editor: activeEditor }) => {
       contentJsonRef.current = activeEditor.getJSON() as TiptapDoc;
@@ -198,7 +245,7 @@ export const MobileStandaloneTiptapEditor = ({
       saveTimerRef.current = window.setTimeout(() => {
         saveTimerRef.current = null;
         void saveNowRef.current();
-      }, MOBILE_EDITOR_AUTO_SAVE_DELAY_MS);
+      }, EDITOR_LOCAL_SAVE_DELAY_MS);
     },
   });
 
@@ -250,7 +297,7 @@ export const MobileStandaloneTiptapEditor = ({
   const buildSavePayload = useCallback((currentMemo: MemoDetail) => {
     const editSession = editSessionRef.current;
     if (!editSession || editSession.memoId !== currentMemo.id) {
-      throw new Error("编辑会话尚未就绪");
+      throw new Error(t("editor.saveState.error"));
     }
 
     return {
@@ -421,7 +468,7 @@ export const MobileStandaloneTiptapEditor = ({
           return true;
         }
 
-        setError(saveError instanceof Error ? saveError.message : "保存失败，已保留本地草稿");
+        setError(saveError instanceof Error ? saveError.message : t("editor.saveState.error"));
         setSaveStateStable("error");
         return false;
       } finally {
@@ -447,7 +494,7 @@ export const MobileStandaloneTiptapEditor = ({
     saveTimerRef.current = window.setTimeout(() => {
       saveTimerRef.current = null;
       void saveNow();
-    }, MOBILE_EDITOR_AUTO_SAVE_DELAY_MS);
+    }, EDITOR_LOCAL_SAVE_DELAY_MS);
   }, [persistLocalDraft, saveNow, setSaveStateStable]);
 
   const persistReturnPreview = useCallback(() => {
@@ -513,6 +560,14 @@ export const MobileStandaloneTiptapEditor = ({
     scheduleMetadataSave();
   };
 
+  const loadTags = useCallback(async () => {
+    if (memoId) {
+      const localMemo = await localDb.memos.filter((candidate) => candidate.id === memoId).first();
+      if (localMemo) return listLocalTags(localMemo.scope);
+    }
+    return requestMobileEditorJson<{ tags: TagSummary[] }>("/api/v1/tags");
+  }, [memoId]);
+
   const handleNotebookChange = async (nextNotebookId: string) => {
     const currentMemo = memoRef.current;
     if (!currentMemo || !nextNotebookId || nextNotebookId === currentMemo.notebookId || notebookUpdatePending) {
@@ -553,7 +608,7 @@ export const MobileStandaloneTiptapEditor = ({
         }
       }, 1200);
     } catch (notebookError) {
-      setError(notebookError instanceof Error ? notebookError.message : "切换笔记本失败");
+      setError(notebookError instanceof Error ? notebookError.message : t("editor.saveState.error"));
       setSaveStateStable("error");
     } finally {
       setNotebookUpdatePending(false);
@@ -561,30 +616,70 @@ export const MobileStandaloneTiptapEditor = ({
     }
   };
 
-  const handleImageUpload = async (file?: File | null) => {
+  const handleResourceUpload = async (file?: File | null) => {
     const currentMemo = memoRef.current;
     if (!currentMemo || !editor || !file) {
       return;
     }
 
     setError(null);
-    setSaveStateStable("compressing");
-
     try {
-      const uploadFile = (await compressImageForUpload(file)).file;
+      const isImage = file.type.startsWith("image/");
+      setSaveStateStable(isImage ? "compressing" : "uploading");
+      const uploadFile = isImage ? (await compressImageForUpload(file)).file : file;
       setSaveStateStable("uploading");
       const { resource } = await uploadMobileEditorResource(currentMemo.id, uploadFile);
-      editor
-        .chain()
-        .focus()
-        .setImage({
-          src: resource.url,
-          alt: file.name,
-          title: file.name,
-        })
-        .run();
+      if (resource.kind === "image") {
+        editor
+          .chain()
+          .focus()
+          .setImage({
+            src: resource.url,
+            alt: file.name,
+            title: file.name,
+          })
+          .run();
+      } else if (isPdfAttachment(file.type, resource.filename || file.name)) {
+        editor
+          .chain()
+          .focus()
+          .insertContent({
+            type: "paragraph",
+            content: [{
+              type: "edgeeverPdfAttachment",
+              attrs: {
+                url: resource.url,
+                label: `附件：${resource.filename || file.name}`,
+                filename: resource.filename || file.name,
+                mimeType: resource.mimeType || file.type || "application/pdf",
+                byteSize: resource.byteSize,
+                displayMode: "compact",
+              },
+            }],
+          })
+          .run();
+      } else {
+        const filename = resource.filename || file.name;
+        editor
+          .chain()
+          .focus()
+          .insertContent({
+            type: "paragraph",
+            content: [{
+              type: "edgeeverFileAttachment",
+              attrs: {
+                url: resource.url,
+                label: `附件：${filename}`,
+                filename,
+                mimeType: file.type,
+                byteSize: resource.byteSize,
+              },
+            }],
+          })
+          .run();
+      }
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "图片上传失败");
+      setError(uploadError instanceof Error ? uploadError.message : t("editor.uploadState.fileFailed"));
       setSaveStateStable("error");
     }
   };
@@ -637,7 +732,7 @@ export const MobileStandaloneTiptapEditor = ({
   useEffect(() => {
     if (!memoId || !editor) {
       if (!memoId) {
-        setError("缺少 memoId");
+        setError(t("editor.saveState.error"));
         setSaveStateStable("error");
       }
       return;
@@ -660,7 +755,7 @@ export const MobileStandaloneTiptapEditor = ({
 
         editSessionRef.current = sessionData.editSession;
 
-        const nextTitle = data.memo.title || "";
+        const nextTitle = getEditableMemoTitle(data.memo.title);
         const nextTagsText = Array.isArray(data.memo.tags) ? data.memo.tags.join(", ") : "";
         const nextContentJson = normalizeMobileEditorDoc(data.memo);
         let draft = await readBestLocalDraft();
@@ -677,6 +772,13 @@ export const MobileStandaloneTiptapEditor = ({
           queuedUpdate = undefined;
         }
         const useDraft = Boolean(draft && (queuedUpdate || Date.parse(draft.updatedAt || "") >= Date.parse(data.memo.updatedAt || "")));
+        const queuedPayload =
+          queuedUpdate && queuedUpdate.kind === "memo.update"
+            ? (queuedUpdate.payload as MemoUpdateSyncPayload)
+            : null;
+        const useQueuedPayload = Boolean(
+          queuedPayload && !useDraft && queuedUpdate && !isMemoUpdateAlreadyApplied(data.memo, queuedUpdate),
+        );
 
         setMemo(data.memo);
 
@@ -690,6 +792,23 @@ export const MobileStandaloneTiptapEditor = ({
           dirtyRef.current = true;
           setSaveStateStable("local-draft");
           scheduleMetadataSave();
+          focusEditorAfterLoad();
+        } else if (useQueuedPayload && queuedPayload) {
+          const queuedTitle = getEditableMemoTitle(queuedPayload.title);
+          const queuedTagsText = queuedPayload.tags.join(", ");
+          setTitle(queuedTitle);
+          titleRef.current = queuedTitle;
+          setTagsText(queuedTagsText);
+          tagsTextRef.current = queuedTagsText;
+          contentJsonRef.current = queuedPayload.contentJson || emptyDoc();
+          editor.commands.setContent(contentJsonRef.current, { emitUpdate: false });
+          lastSavedSnapshotRef.current = JSON.stringify({
+            title: queuedTitle,
+            tagsText: queuedTagsText,
+            contentJson: contentJsonRef.current,
+          });
+          dirtyRef.current = false;
+          setSaveStateStable("local-draft");
           focusEditorAfterLoad();
         } else {
           setTitle(nextTitle);
@@ -711,7 +830,7 @@ export const MobileStandaloneTiptapEditor = ({
         if (cancelled) {
           return;
         }
-        setError(loadError instanceof Error ? loadError.message : "加载失败");
+        setError(loadError instanceof Error ? loadError.message : t("editor.loading"));
         setSaveStateStable("error");
       }
     })();
@@ -723,7 +842,7 @@ export const MobileStandaloneTiptapEditor = ({
         initialFocusTimerRef.current = null;
       }
     };
-  }, [editor, focusEditorAfterLoad, memoId, readBestLocalDraft, scheduleMetadataSave, setSaveStateStable]);
+  }, [editor, focusEditorAfterLoad, memoId, readBestLocalDraft, scheduleMetadataSave, setSaveStateStable, t]);
 
   useEffect(() => {
     const handlePageHide = () => {
@@ -788,17 +907,35 @@ export const MobileStandaloneTiptapEditor = ({
     };
   }, [currentSnapshot, draftKey, memoId, persistLocalDraft, persistReturnPreview, reconcileBackgroundSave, saveNow, sendBackgroundSave, setSaveStateStable]);
 
-  const saveLabel = getMobileEditorSaveLabel(saveState);
+  const saveLabel =
+    saveState === "loading"
+      ? t("editor.loading")
+      : saveState === "saving"
+        ? t("editor.saveState.saving")
+        : saveState === "compressing"
+          ? t("editor.uploadState.compressing")
+          : saveState === "uploading"
+            ? t("editor.uploadState.uploading")
+            : saveState === "dirty"
+              ? t("editor.saveState.unsaved")
+              : saveState === "saved"
+                ? t("editor.saveState.saved")
+                : saveState === "local-draft"
+                  ? t("editor.saveState.unsaved")
+                  : saveState === "leaving"
+                    ? t("editor.backToList")
+                    : saveState === "error"
+                      ? t("editor.saveState.error")
+                      : t("editor.saveState.saved");
   const statusClassName = getMobileEditorStatusClassName(saveState);
   const editorActionDisabled =
     !memo || !editor || saveState === "loading" || saveState === "compressing" || saveState === "uploading" || saveState === "leaving";
   const currentNotebookLabel =
-    notebookOptions.find((notebook) => notebook.id === memo?.notebookId)?.name ?? (notebookOptions.length === 0 ? "等待分类" : "笔记本");
+    notebookOptions.find((notebook) => notebook.id === memo?.notebookId)?.name ?? t("editor.notebookFallback");
+  const activeListItemType = editor?.isActive("taskItem") ? "taskItem" : "listItem";
+  const canWrapIndentedParagraph = Boolean(editor && wrapIndentedParagraphInList(editor.state, undefined));
 
   const fallbackMarkdown = memo ? docToMarkdown(contentJsonRef.current) : "";
-  const tableActive = Boolean(editor?.isActive("table"));
-  const tableHeaderActive = Boolean(editor?.isActive("tableHeader"));
-
   const runEditorCommand = (command: () => boolean) => {
     if (editorActionDisabled || !editor) {
       return;
@@ -806,32 +943,6 @@ export const MobileStandaloneTiptapEditor = ({
 
     command();
     editor.commands.focus();
-  };
-
-  const runTableAction = (action: MobileEditorTableActionId) => {
-    runEditorCommand(() => {
-      const chain = editor?.chain().focus();
-      if (!chain) {
-        return false;
-      }
-
-      switch (action) {
-        case "insertTable":
-          return chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run();
-        case "addTableRow":
-          return chain.addRowAfter().run();
-        case "deleteTableRow":
-          return editor?.isActive("tableHeader") ? false : chain.deleteRow().run();
-        case "addTableColumn":
-          return chain.addColumnAfter().run();
-        case "deleteTableColumn":
-          return chain.deleteColumn().run();
-        case "toggleTableHeader":
-          return chain.toggleHeaderRow().run();
-        case "deleteTable":
-          return chain.deleteTable().run();
-      }
-    });
   };
 
   return (
@@ -846,7 +957,7 @@ export const MobileStandaloneTiptapEditor = ({
           autoComplete="on"
           autoCorrect="on"
           inputMode="text"
-          placeholder={DEFAULT_MOBILE_EDITOR_MEMO_TITLE}
+          placeholder={t("common.untitledMemo")}
           onChange={(event) => handleTitleChange(event.target.value)}
         />
         <div className="mobile-editor-meta-row">
@@ -855,14 +966,13 @@ export const MobileStandaloneTiptapEditor = ({
             disabled={!memo || notebookUpdatePending || saveState === "loading" || notebookOptions.length === 0}
             onOpen={() => setNotebookSheetOpen(true)}
           />
-          <input
-            className="mobile-editor-tags"
+          <EditorTagPicker
+            contentMarkdown={fallbackMarkdown}
+            disabled={!memo || saveState === "loading"}
+            loadTags={loadTags}
+            title={title}
             value={tagsText}
-            autoComplete="on"
-            autoCorrect="on"
-            inputMode="text"
-            placeholder="添加标签，用逗号分隔"
-            onChange={(event) => handleTagsChange(event.target.value)}
+            onChange={handleTagsChange}
           />
         </div>
 
@@ -870,25 +980,35 @@ export const MobileStandaloneTiptapEditor = ({
           disabled={editorActionDisabled}
           boldActive={Boolean(editor?.isActive("bold"))}
           bulletListActive={Boolean(editor?.isActive("bulletList"))}
+          taskListActive={Boolean(editor?.isActive("taskList"))}
+          increaseListIndentAvailable={canWrapIndentedParagraph || Boolean(editor?.can().chain().focus().sinkListItem(activeListItemType).run())}
+          decreaseListIndentAvailable={Boolean(editor?.can().chain().focus().liftListItem(activeListItemType).run())}
           blockquoteActive={Boolean(editor?.isActive("blockquote"))}
-          tableActive={tableActive}
-          tableHeaderActive={tableHeaderActive}
+          locale={locale}
           onPickImage={() => imageInputRef.current?.click()}
           onToggleBold={() => runEditorCommand(() => editor?.chain().focus().toggleBold().run() ?? false)}
-          onToggleBulletList={() => runEditorCommand(() => editor?.chain().focus().toggleBulletList().run() ?? false)}
+          onToggleBulletList={() => runEditorCommand(() => (
+            editor ? wrapIndentedParagraphInList(editor.state, editor.view.dispatch, "bulletList") || editor.commands.toggleBulletList() : false
+          ))}
+          onToggleTaskList={() => runEditorCommand(() => (
+            editor ? wrapIndentedParagraphInList(editor.state, editor.view.dispatch, "taskList") || editor.commands.toggleTaskList() : false
+          ))}
+          onIncreaseListIndent={() => runEditorCommand(() => (
+            editor ? wrapIndentedParagraphInList(editor.state, editor.view.dispatch) || editor.commands.sinkListItem(activeListItemType) : false
+          ))}
+          onDecreaseListIndent={() => runEditorCommand(() => editor?.chain().focus().liftListItem(activeListItemType).run() ?? false)}
           onToggleBlockquote={() => runEditorCommand(() => editor?.chain().focus().toggleBlockquote().run() ?? false)}
           onSetHorizontalRule={() => runEditorCommand(() => editor?.chain().focus().setHorizontalRule().run() ?? false)}
-          onTableAction={runTableAction}
         />
         <input
           ref={imageInputRef}
           type="file"
-          accept="image/png,image/jpeg,image/gif,image/webp,image/avif"
+          accept="*/*"
           hidden
           onChange={(event) => {
             const file = event.target.files?.[0];
             event.target.value = "";
-            void handleImageUpload(file);
+            void handleResourceUpload(file);
           }}
         />
 

@@ -1,15 +1,18 @@
 import { useState } from "react";
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Linking,
   Platform,
+  ScrollView,
   StyleSheet,
   View,
 } from "react-native";
+import { PUBLIC_DEMO_INSTANCE_URL } from "@edgeever/shared";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { ExternalLink, LockKeyhole } from "../components/icons";
+import { ActivityIndicator, GitHub, LockKeyhole } from "../components/icons";
 import { Pressable, Text, TextInput } from "../components/LocalizedText";
+import { formatMobileLoginError } from "../lib/login-error";
+import { useMobileLocale } from "../lib/mobile-locale";
 import { resolveMobileThemeStyles, useMobileTheme, type MobileResolvedTheme } from "../lib/mobile-theme";
 import { useSession } from "../lib/session";
 
@@ -17,6 +20,7 @@ const GITHUB_REPOSITORY_URL = "https://github.com/tianma-if/edgeever";
 
 export const LoginScreen = () => {
   const { resolvedTheme } = useMobileTheme();
+  const { resolvedLocale } = useMobileLocale();
   refreshLoginThemeStyles(resolvedTheme);
   const { signIn } = useSession();
   const [baseUrl, setBaseUrl] = useState("");
@@ -38,7 +42,7 @@ export const LoginScreen = () => {
     try {
       await signIn({ baseUrl, username, password });
     } catch (signInError) {
-      setError(signInError instanceof Error ? signInError.message : "登录失败");
+      setError(formatMobileLoginError(signInError, resolvedLocale));
     } finally {
       setSubmitting(false);
     }
@@ -47,73 +51,79 @@ export const LoginScreen = () => {
   return (
     <SafeAreaView style={styles.safeArea}>
       <Pressable accessibilityLabel="GitHub 仓库" accessibilityRole="link" onPress={() => Linking.openURL(GITHUB_REPOSITORY_URL)} style={styles.githubButton}>
-        <ExternalLink color="#475569" size={20} />
+        <GitHub color="#475569" size={20} />
       </Pressable>
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.keyboard}>
-        <View style={styles.form}>
-          <View style={styles.header}>
-            <View style={styles.logo}>
-              <LockKeyhole color="#ffffff" size={22} />
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.form}>
+            <View style={styles.header}>
+              <View style={styles.logo}>
+                <LockKeyhole color="#ffffff" size={22} />
+              </View>
+              <View style={styles.headerText}>
+                <Text style={styles.title}>EdgeEver</Text>
+                <Text style={styles.subtitle}>连接你的自托管笔记空间</Text>
+              </View>
             </View>
-            <View style={styles.headerText}>
-              <Text style={styles.title}>EdgeEver</Text>
-              <Text style={styles.subtitle}>连接你的自托管笔记空间</Text>
+            <View style={styles.field}>
+              <Text style={styles.label}>实例地址</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                keyboardType="url"
+                onChangeText={setBaseUrl}
+                placeholder={PUBLIC_DEMO_INSTANCE_URL}
+                placeholderTextColor="#94a3b8"
+                style={styles.input}
+                value={baseUrl}
+              />
             </View>
-          </View>
-          <View style={styles.field}>
-            <Text style={styles.label}>实例地址</Text>
-            <TextInput
-              autoCapitalize="none"
-              autoCorrect={false}
-              keyboardType="url"
-              onChangeText={setBaseUrl}
-              placeholder="https://notes.example.com"
-              placeholderTextColor="#94a3b8"
-              style={styles.input}
-              value={baseUrl}
-            />
-          </View>
 
-          <View style={styles.field}>
-            <Text style={styles.label}>用户名</Text>
-            <TextInput
-              autoCapitalize="none"
-              autoCorrect={false}
-              onChangeText={setUsername}
-              placeholder="owner"
-              placeholderTextColor="#94a3b8"
-              style={styles.input}
-              value={username}
-            />
+            <View style={styles.field}>
+              <Text style={styles.label}>用户名</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoCorrect={false}
+                onChangeText={setUsername}
+                placeholder="owner"
+                placeholderTextColor="#94a3b8"
+                style={styles.input}
+                value={username}
+              />
+            </View>
+
+            <View style={styles.field}>
+              <Text style={styles.label}>密码</Text>
+              <TextInput
+                onChangeText={setPassword}
+                placeholder="首次登录密码"
+                placeholderTextColor="#94a3b8"
+                secureTextEntry
+                style={styles.input}
+                value={password}
+              />
+            </View>
+
+            {error ? <Text style={styles.error}>{error}</Text> : null}
+
+            <Pressable
+              accessibilityRole="button"
+              disabled={!canSubmit || submitting}
+              onPress={handleSubmit}
+              style={({ pressed }) => [
+                styles.button,
+                (!canSubmit || submitting) && styles.buttonDisabled,
+                pressed && canSubmit ? styles.buttonPressed : null,
+              ]}
+            >
+              {submitting ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.buttonText}>登录</Text>}
+            </Pressable>
           </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>密码</Text>
-            <TextInput
-              onChangeText={setPassword}
-              placeholder="首次登录密码"
-              placeholderTextColor="#94a3b8"
-              secureTextEntry
-              style={styles.input}
-              value={password}
-            />
-          </View>
-
-          {error ? <Text style={styles.error}>{error}</Text> : null}
-
-          <Pressable
-            accessibilityRole="button"
-            disabled={!canSubmit || submitting}
-            onPress={handleSubmit}
-            style={({ pressed }) => [
-              styles.button,
-              (!canSubmit || submitting) && styles.buttonDisabled,
-              pressed && canSubmit ? styles.buttonPressed : null,
-            ]}
-          >
-            {submitting ? <ActivityIndicator color="#ffffff" /> : <Text style={styles.buttonText}>登录</Text>}
-          </Pressable>
-        </View>
+        </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
   );
@@ -140,6 +150,9 @@ const baseLoginStyles = StyleSheet.create({
   },
   keyboard: {
     flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: "center",
     padding: 24,
   },

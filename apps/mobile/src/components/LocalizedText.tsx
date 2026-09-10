@@ -4,17 +4,23 @@ import {
   Pressable as NativePressable,
   Text as NativeText,
   TextInput as NativeTextInput,
+  type AlertOptions,
   type PressableProps,
   type TextInputProps,
   type TextProps,
 } from "react-native";
 import { translateCurrentMobileText, useMobileLocale } from "../lib/mobile-locale";
-import { presentAppDialog } from "./app-dialog-controller";
+import { presentAppDialog, type AppDialogButton } from "./app-dialog-controller";
 
 const translateChildren = (children: ReactNode, translate: (value: string) => string): ReactNode =>
   Children.map(children, (child) => {
     if (typeof child === "string") {
       return translate(child);
+    }
+    // Keep numeric/boolean leaves as plain strings so Fabric's AttributedString
+    // cache never receives mixed non-text host children under Text.
+    if (typeof child === "number" || typeof child === "boolean") {
+      return String(child);
     }
     if (isValidElement(child) && child.type === NativeText) {
       return child;
@@ -25,7 +31,7 @@ const translateChildren = (children: ReactNode, translate: (value: string) => st
 export const Text = forwardRef<ComponentRef<typeof NativeText>, TextProps>(({ children, ...props }, ref) => {
   const { translate } = useMobileLocale();
   return (
-    <NativeText {...props} ref={ref}>
+    <NativeText allowFontScaling {...props} ref={ref}>
       {translateChildren(children, translate)}
     </NativeText>
   );
@@ -61,8 +67,15 @@ export const Pressable = forwardRef<ComponentRef<typeof NativePressable>, Pressa
 
 Pressable.displayName = "LocalizedPressable";
 
+type AppAlertParameters = [
+  title: string,
+  message?: string,
+  buttons?: AppDialogButton[],
+  options?: AlertOptions,
+];
+
 export const Alert = {
-  alert: (...[title, message, buttons, options]: Parameters<typeof NativeAlert.alert>) => {
+  alert: (...[title, message, buttons, options]: AppAlertParameters) => {
     const translatedTitle = translateCurrentMobileText(title);
     const translatedMessage = message ? translateCurrentMobileText(message) : message;
     const translatedButtons = buttons?.map((button) => ({
