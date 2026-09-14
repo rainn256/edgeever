@@ -1,4 +1,4 @@
-import { AlignHorizontalJustifyCenter, ChartNoAxesCombined, FileCode2, Image, Keyboard, Languages, MousePointerClick, Palette, Sparkles } from "lucide-react";
+import { AlignHorizontalJustifyCenter, ChartNoAxesCombined, Image, Keyboard, Languages, MousePointerClick, Palette, Sparkles, SunMoon } from "lucide-react";
 import { useState, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import type { EditorContentAlignment, ShortcutSettings } from "@/lib/app-helpers";
@@ -40,14 +40,15 @@ import {
 import { ShortcutSettingsItem } from "./ShortcutSettingsItem";
 import { CustomEditorThemeDialog } from "./CustomEditorThemeDialog";
 import {
-  MARKDOWN_THEME_PREFERENCES,
   MERMAID_THEME_PREFERENCES,
+  useAppearanceTheme,
   useEditorTheme,
-  useMarkdownTheme,
   useMermaidTheme,
   DEFAULT_CUSTOM_LIGHT_COLORS,
   DEFAULT_CUSTOM_DARK_COLORS,
+  localizeStoredCustomThemeName,
   type CustomEditorTheme,
+  type ThemePreference,
 } from "../ThemeProvider";
 
 interface PreferenceCardProps {
@@ -74,8 +75,8 @@ export const PreferenceCard = ({
     setCustomEditorThemes,
     setEditorTheme,
   } = useEditorTheme();
+  const { preference: appearancePreference, setPreference: setAppearancePreference } = useAppearanceTheme();
   const { mermaidThemePreference, setMermaidTheme } = useMermaidTheme();
-  const { markdownThemePreference, setMarkdownTheme } = useMarkdownTheme();
   const [customThemeDialogOpen, setCustomThemeDialogOpen] = useState(false);
   const [editingTheme, setEditingTheme] = useState<CustomEditorTheme | null>(null);
   const [activeLocalePreference, setActiveLocalePreference] = useState<AppLocalePreference>(() => getAppLocalePreference());
@@ -147,15 +148,20 @@ export const PreferenceCard = ({
   }, []);
 
   const activeCustom = customEditorThemes.find((t) => t.id === editorTheme);
-  const isPreset = editorTheme === "default" || editorTheme === "minimal-emerald" || editorTheme === "outline-emerald" || editorTheme === "wechat-green" || editorTheme === "modern-mint" || editorTheme === "marxico";
+  const customThemeLabel = (name: string) =>
+    localizeStoredCustomThemeName(name, {
+      defaultName: t("settings.customEditorTheme.defaultName"),
+      newName: (index) => t("settings.customEditorTheme.newName", { n: index }),
+    });
 
   const handleEditClick = () => {
-    if (activeCustom) {
-      setEditingTheme(activeCustom);
+    const target = activeCustom ?? customEditorThemes[0];
+    if (target) {
+      setEditingTheme({ ...target, name: customThemeLabel(target.name) });
     } else {
       const newTheme: CustomEditorTheme = {
         id: `custom-${Date.now()}`,
-        name: `New theme ${customEditorThemes.length + 1}`,
+        name: t("settings.customEditorTheme.newName", { n: customEditorThemes.length + 1 }),
         light: DEFAULT_CUSTOM_LIGHT_COLORS,
         dark: DEFAULT_CUSTOM_DARK_COLORS,
       };
@@ -211,7 +217,7 @@ export const PreferenceCard = ({
               value={activeLocalePreference}
               onValueChange={(preference) => handleLocalePreferenceChange(preference as AppLocalePreference)}
             >
-              <SelectTrigger aria-label={t("common.language")} className="h-9 bg-white">
+              <SelectTrigger aria-label={t("common.language")} className="h-9 bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -221,6 +227,31 @@ export const PreferenceCard = ({
                     {localeLabels[locale]}
                   </SelectItem>
                 ))}
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+
+        <div className="flex min-h-16 flex-col items-start gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+          <div className="flex min-w-0 items-start gap-3">
+            <SunMoon className={SETTINGS_ITEM_ICON_CLASSNAME} />
+            <div className="min-w-0">
+              <div className={SETTINGS_ITEM_TITLE_CLASSNAME}>{t("settings.themeTitle")}</div>
+              <div className={SETTINGS_ITEM_DESCRIPTION_CLASSNAME}>{t("settings.themeDescription")}</div>
+            </div>
+          </div>
+          <div className="w-full shrink-0 sm:w-80">
+            <Select
+              value={appearancePreference}
+              onValueChange={(value) => setAppearancePreference(value as ThemePreference)}
+            >
+              <SelectTrigger aria-label={t("settings.themeTitle")} className="h-9 bg-card">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="system">{t("settings.themeSystem")}</SelectItem>
+                <SelectItem value="light">{t("settings.themeLight")}</SelectItem>
+                <SelectItem value="dark">{t("settings.themeDark")}</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -239,7 +270,7 @@ export const PreferenceCard = ({
               value={editorContentAlignment}
               onValueChange={(value) => onEditorContentAlignmentChange(value as EditorContentAlignment)}
             >
-              <SelectTrigger aria-label={t("settings.editorContentAlignmentTitle")} className="h-9 bg-white">
+              <SelectTrigger aria-label={t("settings.editorContentAlignmentTitle")} className="h-9 bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -250,89 +281,24 @@ export const PreferenceCard = ({
           </div>
         </div>
 
-        <div className="flex min-h-16 flex-col items-start gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <Palette className={SETTINGS_ITEM_ICON_CLASSNAME} />
-            <div className="min-w-0">
-              <div className={SETTINGS_ITEM_TITLE_CLASSNAME}>{t("settings.editorThemeTitle")}</div>
-              <div className={SETTINGS_ITEM_DESCRIPTION_CLASSNAME}>{t("settings.editorThemeDescription")}</div>
+        {!isMobile && (
+          <div className="flex min-h-16 flex-col items-start gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
+            <div className="flex min-w-0 items-start gap-3">
+              <Palette className={SETTINGS_ITEM_ICON_CLASSNAME} />
+              <div className="min-w-0">
+                <div className={SETTINGS_ITEM_TITLE_CLASSNAME}>{t("settings.customEditorTheme.settingsTitle")}</div>
+                <div className={SETTINGS_ITEM_DESCRIPTION_CLASSNAME}>{t("settings.customEditorTheme.settingsDescription")}</div>
+              </div>
             </div>
-          </div>
-          <div className="flex w-full shrink-0 flex-col gap-2 sm:w-80 sm:flex-row">
-            <Select
-              value={isMobile && !isPreset ? "default" : editorTheme}
-              onValueChange={(value) => {
-                if (value === "create-new") {
-                  const newTheme: CustomEditorTheme = {
-                    id: `custom-${Date.now()}`,
-                    name: `New theme ${customEditorThemes.length + 1}`,
-                    light: DEFAULT_CUSTOM_LIGHT_COLORS,
-                    dark: DEFAULT_CUSTOM_DARK_COLORS,
-                  };
-                  setEditingTheme(newTheme);
-                  setCustomThemeDialogOpen(true);
-                } else {
-                  setEditorTheme(value);
-                }
-              }}
-            >
-              <SelectTrigger aria-label={t("settings.editorThemeTitle")} className="h-9 w-full min-w-0 flex-1 bg-white">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="default">{t("settings.editorThemes.default")}</SelectItem>
-                <SelectItem value="minimal-emerald">{t("settings.editorThemes.minimal-emerald")}</SelectItem>
-                <SelectItem value="outline-emerald">{t("settings.editorThemes.outline-emerald")}</SelectItem>
-                <SelectItem value="wechat-green">{t("settings.editorThemes.wechat-green")}</SelectItem>
-                <SelectItem value="modern-mint">{t("settings.editorThemes.modern-mint")}</SelectItem>
-                <SelectItem value="marxico">{t("settings.editorThemes.marxico")}</SelectItem>
-                {!isMobile && (
-                  <>
-                    {customEditorThemes.length > 0 && <div className="my-1 border-t border-slate-100" />}
-                    {customEditorThemes.map((theme) => (
-                      <SelectItem key={theme.id} value={theme.id}>
-                        {theme.name}
-                      </SelectItem>
-                    ))}
-                    <div className="my-1 border-t border-slate-100" />
-                    <SelectItem value="create-new" className="text-emerald-700 font-medium">
-                      + {t("settings.customEditorTheme.create", "Create New Theme...")}
-                    </SelectItem>
-                  </>
-                )}
-              </SelectContent>
-            </Select>
-            {!isMobile && (
+            <div className="flex w-full shrink-0 flex-col gap-2 sm:w-auto sm:flex-row">
               <Button variant="outline" className="h-9 shrink-0 px-3 text-sm" onClick={handleEditClick}>
-                {activeCustom ? t("settings.customEditorTheme.edit") : t("settings.customEditorTheme.customize", "Customize")}
+                {activeCustom || customEditorThemes.length > 0
+                  ? t("settings.customEditorTheme.edit")
+                  : t("settings.customEditorTheme.create")}
               </Button>
-            )}
-          </div>
-        </div>
-
-        <div className="flex min-h-16 flex-col items-start gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
-          <div className="flex min-w-0 items-start gap-3">
-            <FileCode2 className={SETTINGS_ITEM_ICON_CLASSNAME} />
-            <div className="min-w-0">
-              <div className={SETTINGS_ITEM_TITLE_CLASSNAME}>{t("settings.markdownThemeTitle")}</div>
-              <div className={SETTINGS_ITEM_DESCRIPTION_CLASSNAME}>{t("settings.markdownThemeDescription")}</div>
             </div>
           </div>
-          <div className="w-full shrink-0 sm:w-80">
-            <Select value={markdownThemePreference} onValueChange={(value) => setMarkdownTheme(value as typeof markdownThemePreference)}>
-              <SelectTrigger aria-label={t("settings.markdownThemeTitle")} className="h-9 bg-white">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {MARKDOWN_THEME_PREFERENCES.map((theme) => (
-                  <SelectItem key={theme} value={theme}>
-                    {t(`settings.markdownThemes.${theme}`)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+        )}
 
         <div className="flex min-h-16 flex-col items-start gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-4">
           <div className="flex min-w-0 items-start gap-3">
@@ -344,7 +310,7 @@ export const PreferenceCard = ({
           </div>
           <div className="w-full shrink-0 sm:w-80">
             <Select value={mermaidThemePreference} onValueChange={(value) => setMermaidTheme(value as typeof mermaidThemePreference)}>
-              <SelectTrigger aria-label={t("settings.mermaidThemeTitle")} className="h-9 bg-white">
+              <SelectTrigger aria-label={t("settings.mermaidThemeTitle")} className="h-9 bg-card">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>

@@ -32,7 +32,15 @@ import { QuickMemoSwitcher } from "./QuickMemoSwitcher";
 import { AppConfirmDialog, MemoDeleteConfirmDialog, NotebookNameDialog } from "./dialogs/ConfirmDialogs";
 import { PluginPanelDialog } from "./plugins/PluginPanelDialog";
 import { api, getOrCreateClientDeviceId } from "@/lib/api";
+import { MarkdownExportMemoryLimitError, type MarkdownExportProgress } from "@/lib/markdown-export";
+import { exportSelectedMemosAsMarkdownZip } from "@/lib/selected-markdown-export";
 import { createPluginScheduleAdapter } from "@/lib/plugins/plugin-schedule-adapter";
+import { createPluginCatalogAdapter } from "@/lib/plugins/plugin-catalog-sync";
+import {
+  acknowledgePluginTrustWarning,
+  hasAcknowledgedPluginTrustWarning,
+  PLUGIN_TRUST_WARNING_COPY,
+} from "@/lib/plugins/plugin-trust";
 import {
   clearMobileEditorReturnPreview,
   consumeStandaloneMobileEditorReturn,
@@ -75,6 +83,8 @@ import {
   getExpandableNotebookIds,
   filterNotebookTree,
   getNotebookMoveOptions,
+  getMemoIdsNeedingMove,
+  resolveSelectionMoveTargetNotebookId,
 } from "@/lib/app-helpers";
 import { useBrowserBackLayer } from "@/lib/app-hooks";
 import { updateMemoSummaryInLists, type MemoListQueryData } from "@/lib/memo-list-cache";
@@ -171,7 +181,7 @@ const ExecutionCenterPane = lazy(() =>
 );
 
 const PaneLoadingFallback = ({ label = "Loading" }: { label?: string }) => (
-  <div className="flex h-full min-h-0 items-center justify-center bg-white text-sm font-medium text-slate-400" role="status">
+  <div className="flex h-full min-h-0 items-center justify-center bg-card text-sm font-medium text-slate-400" role="status">
     {label}
   </div>
 );
@@ -379,7 +389,7 @@ const MobileBottomNav = ({
 
   return (
     <nav
-      className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-5 pb-[max(0.125rem,env(safe-area-inset-bottom))] pt-0 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-card/95 px-5 pb-[max(0.125rem,env(safe-area-inset-bottom))] pt-0 shadow-[0_-10px_30px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden"
       aria-label={t("nav.mobileMain")}
     >
       <div className="relative grid h-mobile-bottom-nav grid-cols-3 items-center">
@@ -514,7 +524,7 @@ const MobileNotebookPicker = ({
             />
             {notebookSearch && (
               <button
-                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-white hover:text-slate-700"
+                className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-400 transition hover:bg-card hover:text-slate-700"
                 type="button"
                 title={t("mobileNotebookPicker.clearSearch")}
                 aria-label={t("mobileNotebookPicker.clearSearch")}
@@ -752,6 +762,12 @@ export const WorkspaceApp = ({
   const [notebookNameDialog, setNotebookNameDialog] = useState<NotebookNameDialogState | null>(null);
   const [notebookDeleteConfirmation, setNotebookDeleteConfirmation] = useState<Notebook | null>(null);
   const [appNoticeDialog, setAppNoticeDialog] = useState<AppNoticeDialogState | null>(null);
+  const [pendingCatalogTrustPluginIds, setPendingCatalogTrustPluginIds] = useState<string[]>([]);
+  const [isExportingSelectedMemos, setIsExportingSelectedMemos] = useState(false);
+  const [selectedMarkdownExportProgress, setSelectedMarkdownExportProgress] = useState<MarkdownExportProgress>({
+    completed: 0,
+    total: 0,
+  });
   const [demoResetConfirmationOpen, setDemoResetConfirmationOpen] = useState(false);
   const scheduledTaskDeviceId = useMemo(
     () => window.edgeeverDesktop?.isAvailable ? getOrCreateClientDeviceId() : null,
@@ -764,6 +780,7 @@ export const WorkspaceApp = ({
   const pluginPublicNetworkAdapter = useMemo(() => createPublicNetworkAdapter(api.pluginNetwork, {
     desktop: window.edgeeverDesktop?.isAvailable ? window.edgeeverDesktop : undefined,
   }), []);
+  const pluginCatalogAdapter = useMemo(() => demoMode ? undefined : createPluginCatalogAdapter(), [demoMode]);
   const pluginHost = useMemo(() => new EdgeEverPluginHost({
     repository,
     scope: localDataScope,
@@ -771,6 +788,7 @@ export const WorkspaceApp = ({
     publicNetworkAdapter: pluginPublicNetworkAdapter,
     onNotice: (message) => setAppNoticeDialog({ title: t("plugins.noticeTitle"), description: message }),
     scheduleAdapter: pluginScheduleAdapter,
+    catalogAdapter: pluginCatalogAdapter,
     onWorkspaceChanged: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["memos"] }),
@@ -781,14 +799,16 @@ export const WorkspaceApp = ({
         queryClient.invalidateQueries({ queryKey: ["resources"] }),
       ]);
     },
-  }), [localDataScope, pluginPublicNetworkAdapter, pluginScheduleAdapter, queryClient, repository, t]);
+  }), [localDataScope, pluginCatalogAdapter, pluginPublicNetworkAdapter, pluginScheduleAdapter, queryClient, repository, t]);
   const [pluginHostReady, setPluginHostReady] = useState(false);
   const pluginHostSnapshot = useSyncExternalStore(pluginHost.subscribe, pluginHost.getSnapshot, pluginHost.getSnapshot);
   useEffect(() => {
     let active = true;
     setPluginHostReady(false);
-    void pluginHost.activateEnabled().then(() => {
-      if (active) setPluginHostReady(true);
+    void pluginHost.activateEnabled().then((pendingTrustPluginIds) => {
+      if (!active) return;
+      setPluginHostReady(true);
+      if (pendingTrustPluginIds.length > 0) setPendingCatalogTrustPluginIds(pendingTrustPluginIds);
     }).catch(() => {
       if (active) setPluginHostReady(false);
     });
@@ -805,6 +825,10 @@ export const WorkspaceApp = ({
       if (!active || running) return;
       running = true;
       try {
+        const pendingTrustPluginIds = await pluginHost.syncFromCatalog();
+        if (active && pendingTrustPluginIds.length > 0 && !hasAcknowledgedPluginTrustWarning()) {
+          setPendingCatalogTrustPluginIds(pendingTrustPluginIds);
+        }
         const marketplace = await loadResolvedPluginMarketplace();
         await updateOfficialMarketplacePlugins(pluginHost, marketplace.entries);
         const firstResolutionError = Object.entries(marketplace.resolutionErrors)[0];
@@ -976,11 +1000,13 @@ export const WorkspaceApp = ({
     editorContentAlignment,
     imageCompressionEnabled,
     memoListWidth,
+    notebookSidebarCollapsed,
     resetMemoListWidth,
     setDesktopFocusMode,
     setEditorContentAlignment,
     setImageCompressionEnabled,
     setMemoListWidth,
+    setNotebookSidebarCollapsed,
     setShortcutSettings,
     shortcutSettings,
   } = useWorkspacePreferences();
@@ -1167,6 +1193,7 @@ export const WorkspaceApp = ({
   const mobileSearchActive = mobileBottomNavActive === "search";
   const workspaceBackTargetActive = Boolean(
     appNoticeDialog ||
+      pendingCatalogTrustPluginIds.length > 0 ||
       notebookDeleteConfirmation ||
       notebookNameDialog ||
       memoDeleteConfirmation ||
@@ -1187,6 +1214,7 @@ export const WorkspaceApp = ({
     !isDesktop &&
       visibleActivePane === "memos" &&
       !appNoticeDialog &&
+      pendingCatalogTrustPluginIds.length === 0 &&
       !notebookDeleteConfirmation &&
       !notebookNameDialog &&
       !memoDeleteConfirmation &&
@@ -2083,6 +2111,7 @@ export const WorkspaceApp = ({
     : null;
   const selectedMemo = memoQuery.data?.memo ?? cachedSelectedMemo;
   const selectedDiagram = parseDiagramDocument(selectedMemo?.contentMarkdown);
+  const desktopNotebookSidebarCollapsed = Boolean(isDesktop && notebookSidebarCollapsed);
   const desktopFocusModeActive = Boolean(
     isDesktop && desktopFocusMode && rightView === "editor" && selectedMemo && !memoSelectionModeActive
   );
@@ -2093,13 +2122,14 @@ export const WorkspaceApp = ({
   );
 
   useEffect(() => {
-    if (selectedNotebook?.id) {
-      setSelectionMoveTargetNotebookId(selectedNotebook.id);
-      return;
-    }
+    const nextTargetId = resolveSelectionMoveTargetNotebookId(
+      selectionMoveTargetNotebookId,
+      selectionMoveNotebookOptions.map((option) => option.id),
+      selectedNotebook?.id
+    );
 
-    if (!selectionMoveTargetNotebookId && selectionMoveNotebookOptions[0]?.id) {
-      setSelectionMoveTargetNotebookId(selectionMoveNotebookOptions[0].id);
+    if (nextTargetId !== selectionMoveTargetNotebookId) {
+      setSelectionMoveTargetNotebookId(nextTargetId);
     }
   }, [selectedNotebook?.id, selectionMoveNotebookOptions, selectionMoveTargetNotebookId]);
 
@@ -2248,17 +2278,12 @@ export const WorkspaceApp = ({
     });
   };
 
-  const getMemoIdsNeedingMove = (memoIds: string[], targetNotebookId: string) => {
-    const memoNotebookMap = new Map(memos.map((memo) => [memo.id, memo.notebookId]));
-    return Array.from(new Set(memoIds.filter(Boolean))).filter((memoId) => memoNotebookMap.get(memoId) !== targetNotebookId);
-  };
-
   const handleMoveSelectedMemos = (targetNotebookId: string) => {
     if (selectedMemoIds.size === 0 || memoView === "trash") {
       return;
     }
 
-    const memoIds = getMemoIdsNeedingMove(Array.from(selectedMemoIds), targetNotebookId);
+    const memoIds = getMemoIdsNeedingMove(memos, Array.from(selectedMemoIds), targetNotebookId);
     if (memoIds.length === 0) {
       return;
     }
@@ -2274,7 +2299,7 @@ export const WorkspaceApp = ({
       return;
     }
 
-    const movableMemoIds = getMemoIdsNeedingMove(memoIds, targetNotebookId);
+    const movableMemoIds = getMemoIdsNeedingMove(memos, memoIds, targetNotebookId);
     if (movableMemoIds.length === 0) {
       return;
     }
@@ -2290,7 +2315,7 @@ export const WorkspaceApp = ({
       return;
     }
 
-    const memoIds = getMemoIdsNeedingMove([memoId], targetNotebookId);
+    const memoIds = getMemoIdsNeedingMove(memos, [memoId], targetNotebookId);
     if (memoIds.length === 0) {
       return;
     }
@@ -2339,6 +2364,60 @@ export const WorkspaceApp = ({
     });
   };
 
+  const handleExportSelectedMemos = () => {
+    if (selectedMemoIds.size === 0 || memoView === "trash" || isExportingSelectedMemos) {
+      return;
+    }
+
+    setIsExportingSelectedMemos(true);
+    setSelectedMarkdownExportProgress({ completed: 0, total: selectedMemoIds.size });
+    void exportSelectedMemosAsMarkdownZip({
+      memoIds: Array.from(selectedMemoIds),
+      listNotebooks: api.listNotebooks,
+      getPage: api.getMarkdownExportPage,
+      getResourceBlob: api.getResourceBlob,
+      onProgress: setSelectedMarkdownExportProgress,
+    }).then((result) => {
+      if (result.status === "too-many") {
+        setAppNoticeDialog({
+          title: t("workspace.selection.export"),
+          description: t("workspace.selection.exportTooMany", { max: result.max }),
+        });
+        return;
+      }
+      if (result.status === "local-only") {
+        setAppNoticeDialog({
+          title: t("workspace.selection.export"),
+          description: t("workspace.selection.exportLocalOnly"),
+        });
+        return;
+      }
+      if (result.status === "empty") {
+        setAppNoticeDialog({
+          title: t("workspace.selection.export"),
+          description: t("workspace.selection.exportEmpty"),
+        });
+        return;
+      }
+      if (result.skippedLocal > 0) {
+        setAppNoticeDialog({
+          title: t("workspace.selection.export"),
+          description: t("workspace.selection.exportCompleteWithSkipped", { count: result.skippedLocal }),
+        });
+      }
+    }).catch((error: unknown) => {
+      console.error("Failed to export selected notes as Markdown ZIP", error);
+      setAppNoticeDialog({
+        title: t("workspace.selection.export"),
+        description: error instanceof MarkdownExportMemoryLimitError
+          ? t("dataExport.largeBackupRequiresStreaming")
+          : t("workspace.selection.exportError"),
+      });
+    }).finally(() => {
+      setIsExportingSelectedMemos(false);
+    });
+  };
+
   const handleDeleteSelectedMemos = () => {
     if (selectedMemoIds.size === 0) {
       return;
@@ -2371,6 +2450,12 @@ export const WorkspaceApp = ({
         : pinMemosMutation.isPending
           ? t("workspace.selection.updatingPin")
           : selectionPinLabel;
+  const selectedMemosNeedingMove = getMemoIdsNeedingMove(
+    memos,
+    Array.from(selectedMemoIds),
+    selectionMoveTargetNotebookId
+  );
+  const canMoveSelectedMemos = selectedMemosNeedingMove.length > 0;
   const selectionMoveTitle =
     selectedMemoIds.size === 0
       ? t("workspace.selection.chooseMemo")
@@ -2380,7 +2465,9 @@ export const WorkspaceApp = ({
           ? t("workspace.selection.noMovableNotebook")
           : moveMemosMutation.isPending
             ? t("workspace.selection.moving")
-            : t("workspace.selection.move");
+            : !canMoveSelectedMemos
+              ? t("workspace.selection.alreadyInNotebook")
+              : t("workspace.selection.move");
   const selectionMergeTitle =
     selectedMemoIds.size < 2
       ? t("workspace.selection.needTwoMemos")
@@ -2389,6 +2476,17 @@ export const WorkspaceApp = ({
         : mergeMutation.isPending
           ? t("workspace.selection.merging")
           : t("workspace.selection.merge");
+  const selectionExportTitle =
+    selectedMemoIds.size === 0
+      ? t("workspace.selection.chooseMemo")
+      : memoView === "trash"
+        ? t("workspace.selection.trashCannotExport")
+        : isExportingSelectedMemos
+          ? t("workspace.selection.exportProgress", {
+            completed: selectedMarkdownExportProgress.completed,
+            total: selectedMarkdownExportProgress.total,
+          })
+          : t("workspace.selection.exportHint");
   const selectionDeleteTitle =
     selectedMemoIds.size === 0
       ? t("workspace.selection.chooseMemo")
@@ -2399,8 +2497,11 @@ export const WorkspaceApp = ({
           : t("workspace.selection.delete");
   const memoSelectionActionBar = memoSelectionModeActive ? (
     <MemoSelectionActionBar
+      canMove={canMoveSelectedMemos}
       deleteTitle={selectionDeleteTitle}
+      exportTitle={selectionExportTitle}
       isDeleting={deleteMemosMutation.isPending || deleteMemoMutation.isPending}
+      isExporting={isExportingSelectedMemos}
       isMerging={mergeMutation.isPending}
       isMoving={moveMemosMutation.isPending}
       isPinning={pinMemosMutation.isPending}
@@ -2411,6 +2512,7 @@ export const WorkspaceApp = ({
       moveTitle={selectionMoveTitle}
       onClearSelection={clearMemoSelection}
       onDelete={handleDeleteSelectedMemos}
+      onExport={handleExportSelectedMemos}
       onMerge={handleMerge}
       onMove={() => handleMoveSelectedMemos(selectionMoveTargetNotebookId)}
       onMoveTargetChange={setSelectionMoveTargetNotebookId}
@@ -2754,6 +2856,11 @@ export const WorkspaceApp = ({
       return true;
     }
 
+    if (pendingCatalogTrustPluginIds.length > 0) {
+      setPendingCatalogTrustPluginIds([]);
+      return true;
+    }
+
     if (notebookDeleteConfirmation) {
       if (!deleteNotebookMutation.isPending) {
         setNotebookDeleteConfirmation(null);
@@ -2863,6 +2970,7 @@ export const WorkspaceApp = ({
     visibleActivePane,
     desktopFocusModeActive,
     appNoticeDialog,
+    pendingCatalogTrustPluginIds,
     rightView,
     clearMemoSelection,
     createNotebookMutation.isPending,
@@ -2942,6 +3050,7 @@ export const WorkspaceApp = ({
 
       const transientLayerOpen = Boolean(
         appNoticeDialog ||
+          pendingCatalogTrustPluginIds.length > 0 ||
           rightView !== "editor" ||
           memoDeleteConfirmation ||
           emptyTrashConfirmationOpen ||
@@ -3045,6 +3154,7 @@ export const WorkspaceApp = ({
   }, [
     rightView,
     appNoticeDialog,
+    pendingCatalogTrustPluginIds,
     canCreateMemo,
     clearPendingCreatedMemo,
     clearMemoSelection,
@@ -3186,7 +3296,7 @@ export const WorkspaceApp = ({
           style={{ transform: `translateY(${Math.max(0, pullToRefreshDistance - 24)}px)` }}
           aria-hidden="true"
         >
-          <div className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-white/95 px-3 text-xs font-semibold text-slate-600 shadow-[0_10px_28px_rgba(15,23,42,0.12)] backdrop-blur">
+          <div className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-200 bg-card/95 px-3 text-xs font-semibold text-slate-600 shadow-[0_10px_28px_rgba(15,23,42,0.12)] backdrop-blur">
             <RefreshCw className={cn("h-4 w-4 text-slate-500", (isPullRefreshing || pullToRefreshReady) && "animate-spin")} />
             <span>{pullToRefreshLabel}</span>
           </div>
@@ -3200,13 +3310,15 @@ export const WorkspaceApp = ({
               ? "edgeever-workspace-grid--focus"
               : rightView === "editor"
                 ? "edgeever-workspace-grid--editor"
-                : "edgeever-workspace-grid--single-right"
+                : "edgeever-workspace-grid--single-right",
+            !desktopFocusModeActive && desktopNotebookSidebarCollapsed && "edgeever-workspace-grid--sidebar-collapsed"
           )}
           style={{ "--memo-list-width": `${memoListWidth}px` } as CSSProperties}
         >
           <aside
+            id="edgeever-notebook-sidebar"
             className={cn(
-              "edgeever-workspace-sidebar min-h-0 border-r",
+              "edgeever-workspace-sidebar min-h-0 overflow-hidden border-r",
               desktopFocusModeActive
                 ? "hidden"
                 : visibleActivePane === "notebooks"
@@ -3270,6 +3382,8 @@ export const WorkspaceApp = ({
                   demoMode={demoMode}
                   onResetDemo={() => setDemoResetConfirmationOpen(true)}
                   isResettingDemo={resetDemoMutation.isPending}
+                  collapsed={desktopNotebookSidebarCollapsed}
+                  onToggleCollapsed={() => setNotebookSidebarCollapsed(!notebookSidebarCollapsed)}
                 />
               </Suspense>
             )}
@@ -3311,6 +3425,7 @@ export const WorkspaceApp = ({
               isError={memosQuery.isError}
               isCreating={createMemoMutation.isPending}
               isMerging={mergeMutation.isPending}
+              isExporting={isExportingSelectedMemos}
               isMoving={moveMemosMutation.isPending}
               isPinning={pinMemosMutation.isPending}
               isDeleting={deleteMemosMutation.isPending || deleteMemoMutation.isPending}
@@ -3391,6 +3506,7 @@ export const WorkspaceApp = ({
               }}
               onTogglePinMemo={handleToggleMemoPinned}
               onPinSelectedMemos={handlePinSelectedMemos}
+              onExportSelectedMemos={handleExportSelectedMemos}
               onDeleteSelectedMemos={handleDeleteSelectedMemos}
               onMoveSelectedMemos={handleMoveSelectedMemos}
               mobileListActionsOpen={mobileListActionsOpen}
@@ -3492,6 +3608,10 @@ export const WorkspaceApp = ({
                     <EvernoteImportGuidePane onClose={() => setRightView("settings")} onOpenExecutionCenter={handleOpenExecutionCenter} />
                   ) : rendererRecoveryMode ? (
                     <EditorRecoveryPane />
+                  ) : memoSelectionModeActive ? (
+                    <div className="flex h-full min-w-0 flex-col bg-card">
+                      {memoSelectionActionBar}
+                    </div>
                   ) : (
                     <EditorPaneErrorBoundary
                       resetKey={selectedMemo?.id ?? selectedMemoId}
@@ -3697,6 +3817,22 @@ export const WorkspaceApp = ({
           onConfirm={() => setAppNoticeDialog(null)}
         />
       )}
+      {pendingCatalogTrustPluginIds.length > 0 ? (
+        <AppConfirmDialog
+          title={t(PLUGIN_TRUST_WARNING_COPY.titleKey)}
+          description={t(PLUGIN_TRUST_WARNING_COPY.descriptionKey)}
+          confirmLabel={t(PLUGIN_TRUST_WARNING_COPY.confirmLabelKey)}
+          closeOnBrowserBack={false}
+          tone="neutral"
+          onCancel={() => setPendingCatalogTrustPluginIds([])}
+          onConfirm={() => {
+            const pluginIds = pendingCatalogTrustPluginIds;
+            acknowledgePluginTrustWarning();
+            setPendingCatalogTrustPluginIds([]);
+            void Promise.all(pluginIds.map((pluginId) => pluginHost.setEnabled(pluginId, true).catch(() => undefined)));
+          }}
+        />
+      ) : null}
       {demoResetConfirmationOpen && (
         <AppConfirmDialog
           title={t("demo.resetTitle")}

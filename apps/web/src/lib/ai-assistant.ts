@@ -6,9 +6,15 @@ import {
   actionNeedsTargetLanguage,
   actionNeedsTone,
   canReplaceAiSource,
+  getAiAssistantLastActionScope,
   getDefaultAiAction,
   getDefaultAiTargetLanguage,
   parseDefaultAiPromptKey,
+  buildAiAssistantLastActionPreference,
+  readStoredAiAssistantLastActionPreference,
+  resolveAiAssistantLastAction,
+  resolveAiAssistantOpenAction,
+  writeStoredAiAssistantLastActionPreference,
   promptAllowsAppend,
   promptAllowsReplace,
   promptNeedsTargetLanguage,
@@ -34,27 +40,38 @@ export const getDefaultTargetLanguage = getDefaultAiTargetLanguage;
 export {
   actionNeedsTargetLanguage,
   actionNeedsTone,
+  buildAiAssistantLastActionPreference,
   canReplaceAiSource,
+  getAiAssistantLastActionScope,
   getDefaultAiAction,
   parseDefaultAiPromptKey,
   promptAllowsAppend,
   promptAllowsReplace,
   promptNeedsTargetLanguage,
   promptNeedsTone,
+  readStoredAiAssistantLastActionPreference,
+  resolveAiAssistantLastAction,
+  resolveAiAssistantOpenAction,
+  writeStoredAiAssistantLastActionPreference,
 };
 
 export const resolveAiAssistantComposerInput = ({
   composerText,
+  hasSelection,
   isFreeformCustom,
   noteContentMarkdown,
   noteTitle,
 }: {
   composerText: string;
+  hasSelection?: boolean;
   isFreeformCustom: boolean;
   noteContentMarkdown: string;
   noteTitle: string;
 }) => {
-  const usesComposerAsSource = !isFreeformCustom && Boolean(composerText.trim());
+  const usesComposerAsSource = !isFreeformCustom
+    && !hasSelection
+    && !noteContentMarkdown.trim()
+    && Boolean(composerText.trim());
   return {
     contentMarkdown: usesComposerAsSource ? composerText : noteContentMarkdown,
     customInstruction: isFreeformCustom ? composerText : "",

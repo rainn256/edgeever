@@ -32,12 +32,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { api } from "@/lib/api";
-import {
-  readAiStreamingPreference,
-  writeAiStreamingPreference,
-} from "@/lib/ai-generation-preference";
 import { cn } from "@/lib/utils";
 
 export const AiModelCard = () => {
@@ -55,7 +50,6 @@ export const AiModelCard = () => {
   const [baseUrl, setBaseUrl] = useState(providerDefaults["openai-compatible"].baseUrl);
   const [apiKey, setApiKey] = useState("");
   const [initialModelId, setInitialModelId] = useState(providerDefaults["openai-compatible"].modelId);
-  const [streamingEnabled, setStreamingEnabled] = useState(readAiStreamingPreference);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["ai-settings"] });
   const resetAddForm = (nextDisplayName = "") => {
@@ -172,7 +166,7 @@ export const AiModelCard = () => {
                           onValueChange={(value) => defaultMutation.mutate(value === "none" ? null : value)}
                           disabled={readOnly || defaultMutation.isPending}
                         >
-                          <SelectTrigger className="h-8 bg-white text-xs"><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="h-8 bg-card text-xs"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="none">{t("aiModel.noDefaultModel")}</SelectItem>
                             {allModels.map((model) => (
@@ -183,21 +177,6 @@ export const AiModelCard = () => {
                           </SelectContent>
                         </Select>
                       </div>
-                    </div>
-                    <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
-                      <div className="min-w-0">
-                        <div className={SETTINGS_ITEM_TITLE_CLASSNAME}>{t("settings.aiStreamingTitle")}</div>
-                        <div className={SETTINGS_ITEM_DESCRIPTION_CLASSNAME}>{t("settings.aiStreamingDescription")}</div>
-                      </div>
-                      <Switch
-                        className="shrink-0"
-                        checked={streamingEnabled}
-                        onCheckedChange={(enabled) => {
-                          writeAiStreamingPreference(enabled);
-                          setStreamingEnabled(enabled);
-                        }}
-                        aria-label={t("settings.aiStreamingAria")}
-                      />
                     </div>
                   </div>
                 </section>
@@ -219,14 +198,14 @@ export const AiModelCard = () => {
                       </span>
                     </div>
                     <DisabledActionTooltip label={!canAddProvider ? addDisabledReason : undefined}>
-                      <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 bg-white text-xs" disabled={!canAddProvider} onClick={openAddDialog}>
+                      <Button type="button" variant="outline" size="sm" className="h-8 gap-1.5 bg-card text-xs" disabled={!canAddProvider} onClick={openAddDialog}>
                         <Plus className="h-3.5 w-3.5" />{t("aiModel.addProvider")}
                       </Button>
                     </DisabledActionTooltip>
                   </div>
 
                   {settings?.providers.length ? (
-                    <div className="overflow-hidden rounded-lg border border-slate-200 divide-y divide-slate-100 bg-white">
+                    <div className="overflow-hidden rounded-lg border border-slate-200 divide-y divide-slate-100 bg-card">
                       {settings.providers.map((item, index) => (
                         <AiProviderCard
                           key={item.id}
@@ -243,9 +222,9 @@ export const AiModelCard = () => {
                   )}
                 </section>
 
-                <div className="flex items-start gap-2 border-t border-slate-200/60 pt-3 dark:border-slate-800/60">
-                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-                  <p className="text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                <div className="flex items-start gap-2 border-t border-slate-200/60 pt-3 ">
+                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 " />
+                  <p className="text-xs leading-relaxed text-slate-500 ">
                     {t("aiModel.privacyNotice")}
                   </p>
                 </div>

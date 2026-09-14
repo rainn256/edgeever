@@ -26,7 +26,7 @@ on:
         description: App Store marketing version to inspect
         required: false
         type: string
-        default: "1.60.0"
+        default: "1.70.0"
       app_store_build_id:
         description: App Store Connect build resource ID to inspect
         required: false
@@ -78,30 +78,55 @@ jobs:
           store_version = os.environ.get("APP_STORE_VERSION", "").strip()
           store_build_id = os.environ.get("APP_STORE_BUILD_ID", "").strip()
 
-          now = int(time.time())
-          token = jwt.encode(
-              {"iss": issuer, "iat": now, "exp": now + 20 * 60, "aud": "appstoreconnect-v1"},
-              private_key,
-              algorithm="ES256",
-              headers={"kid": key_id, "typ": "JWT"},
-          )
+          token = None
+          token_exp = 0
 
-          def api(method, path, body=None):
-              request = urllib.request.Request(
-                  "https://api.appstoreconnect.apple.com" + path,
-                  data=None if body is None else json.dumps(body).encode(),
-                  method=method,
+          def ensure_token():
+              global token, token_exp
+              now = int(time.time())
+              if token and now < token_exp - 60:
+                  return token
+              token_exp = now + 20 * 60
+              encoded = jwt.encode(
+                  {"iss": issuer, "iat": now, "exp": token_exp, "aud": "appstoreconnect-v1"},
+                  private_key,
+                  algorithm="ES256",
+                  headers={"kid": key_id, "typ": "JWT"},
               )
-              request.add_header("Authorization", f"Bearer {token}")
-              if body is not None:
-                  request.add_header("Content-Type", "application/json")
-              try:
-                  with urllib.request.urlopen(request) as response:
-                      payload = response.read().decode()
-                      return json.loads(payload) if payload else {}
-              except urllib.error.HTTPError as error:
-                  details = error.read().decode()
-                  raise SystemExit(f"App Store Connect API {method} {path} failed ({error.code}): {details}")
+              token = encoded.decode() if isinstance(encoded, bytes) else encoded
+              return token
+
+          def invalidate_token():
+              global token, token_exp
+              token = None
+              token_exp = 0
+
+          def api(method, path, body=None, attempts=5):
+              last_error = None
+              for attempt in range(1, attempts + 1):
+                  request = urllib.request.Request(
+                      "https://api.appstoreconnect.apple.com" + path,
+                      data=None if body is None else json.dumps(body).encode(),
+                      method=method,
+                  )
+                  request.add_header("Authorization", f"Bearer {ensure_token()}")
+                  if body is not None:
+                      request.add_header("Content-Type", "application/json")
+                  try:
+                      with urllib.request.urlopen(request) as response:
+                          payload = response.read().decode()
+                          return json.loads(payload) if payload else {}
+                  except urllib.error.HTTPError as error:
+                      details = error.read().decode()
+                      last_error = f"App Store Connect API {method} {path} failed ({error.code}): {details}"
+                      if error.code in (401, 429, 500, 502, 503, 504) and attempt < attempts:
+                          if error.code == 401:
+                              invalidate_token()
+                          print(f"{last_error} retrying {attempt}/{attempts - 1}", flush=True)
+                          time.sleep(min(30, 2 ** attempt))
+                          continue
+                      raise SystemExit(last_error)
+              raise SystemExit(last_error or f"App Store Connect API {method} {path} failed")
 
           if mode == "monitor":
               if not build_run_id:
@@ -332,16 +357,19 @@ jobs:
 
       - name: Submit App Store build for review
         env:
-          APP_STORE_BUILD_NUMBER: "45"
+          APP_STORE_BUILD_NUMBER: "48"
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.EDGEEVER_APPLE_API_ISSUER }}
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.EDGEEVER_APPLE_API_KEY_ID }}
           APP_STORE_CONNECT_API_KEY_P8_BASE64: ${{ secrets.EDGEEVER_APPLE_API_KEY_BASE64 }}
           APP_STORE_RELEASE_NOTES_ZH: |-
-            增强架构图在移动端的浏览体验，支持使用 X6 清晰渲染图表。
-            改进图表标识与展开体验，并避免图表元数据出现在普通笔记中。
+            可从选中文字或整篇笔记打开 AI 助手，并记住你上次使用的操作。
+            内置提示改为笔记工作流：用「提取待办」和「继续写作」替换小红书、推特风格模板；对整篇笔记打开助手时默认进入自定义指令。升级后这两个出厂模板（含已编辑版本）会被移除，自建提示词不受影响。
           APP_STORE_RELEASE_NOTES_EN: |-
-            Improve architecture diagram viewing on mobile with clear X6 rendering.
-            Refine diagram labels and expansion while keeping diagram metadata out of regular notes.
+            Open the AI assistant from a selection or the whole note, and remember the last action you used.
+            Replace the Xiaohongshu and X/Twitter factory prompts with Extract tasks and Continue writing. Opening the assistant on a whole note now starts on a custom instruction. After upgrade, those two factory presets—including edited copies—are removed; prompts you created yourself are kept.
+          APP_STORE_RELEASE_NOTES_JA: |-
+            選択範囲またはノート全体から AI アシスタントを開けます。前回使った操作も覚えます。
+            内蔵プロンプトをノート向けの作業に変更しました。「やることを抽出」「続きを書く」で、小紅書や X/Twitter 向けの初期テンプレートを置き換えます。ノート全体でアシスタントを開くと、カスタム指示から始まります。アップグレード後、これら 2 つの初期テンプレート（編集済みのコピーを含む）は削除されます。自分で作ったプロンプトは残ります。
           APP_STORE_VERSION: ${{ inputs.app_store_version }}
         run: fastlane ios submit_review
         working-directory: apps/ios

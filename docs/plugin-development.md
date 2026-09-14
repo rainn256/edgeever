@@ -1,6 +1,6 @@
 # EdgeEver Plugin Development (P0 Preview)
 
-EdgeEver's P0 extension API supports trusted client plugins and no-code theme packages. Users can install extensions from the verified marketplace, a public GitHub repository, or a manifest URL. Extensions are installed per device and run only while EdgeEver is open. On desktop, users can schedule a registered plugin command while EdgeEver is running. Webhooks, an always-on server background runtime, unrestricted TipTap extensions, and a hard JavaScript sandbox are not part of this preview.
+EdgeEver's P0 extension API supports trusted client plugins and no-code theme packages. Users can install extensions from the verified marketplace, a public GitHub repository, or a manifest URL. The install list follows the current workspace on Web and desktop; each browser or desktop app downloads and verifies the package itself. Android and iOS apps do not run plugins. Extensions run only while EdgeEver is open. On desktop, users can schedule a registered plugin command while EdgeEver is running. Webhooks, an always-on server background runtime, unrestricted TipTap extensions, and a hard JavaScript sandbox are not part of this preview.
 
 ## Security model
 
@@ -152,6 +152,32 @@ export default definePlugin({
 ```
 
 Every registration returns a disposer. The host also disposes registered commands and events automatically when a plugin is disabled.
+
+Commands appear on the plugin marketplace card by default. Set `listed: false` for editor-context or secondary commands that belong in the plugin toolbar menu instead of the install card:
+
+```js
+context.commands.register({
+  id: "insert-task",
+  title: "Insert task at cursor",
+  listed: false,
+  async run() {
+    await context.editor.insertAtCursor("- [ ] ");
+  }
+});
+```
+
+Workflow and preview panels are also omitted from that card. Open them from a command, the toolbar menu, or another panel.
+
+The plugin toolbar menu lists editor commands and dashboard or onboarding panels. It omits workflow or preview dialogs, and omits a command that only opens a dashboard already in the menu. Set `menu: false` when a command should appear on the marketplace card but not next to its dashboard panel:
+
+```js
+context.commands.register({
+  id: "open-dashboard",
+  title: "Open task dashboard",
+  menu: false,
+  run: () => context.ui.panels.open("tasks"),
+});
+```
 
 ## Schedules API
 
@@ -536,13 +562,13 @@ The first demonstrates note queries, selection replacement, commands, and a cust
 
 ## Current limits
 
-- Plugins are installed on one device and are not synchronized.
+- The install list follows the current workspace on Web and desktop. Each client re-downloads and verifies packages. Native Android and iOS apps do not run plugins.
+- Plugin settings, ordinary plugin storage, and secrets stay on the current device and are not synchronized.
 - Plugins run only while the app is open.
 - Desktop plugins can persistently schedule their own registered commands, and users can manage those schedules and inspect paginated run history from the plugin page. A schedule is synced through the workspace, bound to one desktop device, and runs only while EdgeEver is open on that device. A missed occurrence can either be skipped or coalesced into one recovery run. This is not an always-on server background runtime.
 - There is no webhook receiver, server background runtime, marketplace submission backend, or automated review pipeline.
 - Capability declarations are optional descriptive metadata, not API authorization or a sandbox.
 - Custom panels open from the unified desktop plugin menu or extension settings and cannot yet be pinned to the main navigation or editor sidebar.
-- Secret storage is device-local and does not sync to other devices.
 
 ## Generic AI and public network capabilities (unreleased)
 
